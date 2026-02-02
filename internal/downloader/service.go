@@ -51,7 +51,13 @@ func (s *Service) Download(url, format string) (string, error) {
 	outputTemplate := filepath.Join(s.OutDir, "%(title)s.%(ext)s")
 
 	// Common Args
-	commonArgs := []string{"--no-playlist", "--no-warnings"}
+	// Added anti-bot flags: mimic Android client and real user agent
+	commonArgs := []string{
+		"--no-playlist",
+		"--no-warnings",
+		"--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+		"--extractor-args", "youtube:player_client=android",
+	}
 	if format == "mp3" {
 		commonArgs = append(commonArgs, "-x", "--audio-format", "mp3")
 	} else if format == "mp4" {
