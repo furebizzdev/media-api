@@ -93,18 +93,13 @@ func (s *Service) Download(url, format string) (string, error) {
 	}
 
 	// Common Args
-	// Removed forced User-Agent because it conflicts with Cookies (which carry their own session signature).
-	// Let yt-dlp handle the UA or take it from the cookies implicitly.
-	// Common Args
 	// - Force IPv4: Datacenter IPv6 ranges are often blocked.
-	// - User Agent: Safari/iPhone is often less restricted.
-	// - Extractor Args: Specifying 'ios' client is the current best way to bypass 'Sign in' on cloud IPs.
+	// - No Playlist/Warnings: Cleaner output.
+	// - Removed forced User-Agent/iOS client: These often conflict with Desktop cookies and trigger bot detection.
 	commonArgs := []string{
 		"--force-ipv4",
 		"--no-playlist",
 		"--no-warnings",
-		"--user-agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-		"--extractor-args", "youtube:player_client=ios",
 	}
 
 	if hasCookies {
