@@ -50,29 +50,29 @@ func (s *Service) Download(url, format string) (string, error) {
 	// %(id)s is safest for uniqueness if we don't want collisions easily, but title is friendlier.
 	outputTemplate := filepath.Join(s.OutDir, "%(title)s.%(ext)s")
 
-    // Check for cookies (Plan B for bot detection)
-    // 1. Check if cookies.txt exists
-    // 2. Or if YOUTUBE_COOKIES env var is set, verify/write it
-    cookiesPath := "cookies.txt"
-    if envCookies := os.Getenv("YOUTUBE_COOKIES"); envCookies != "" {
-        // Write env var to file if not exists or overwrite? Let's overwrite to ensure freshness
-        _ = os.WriteFile(cookiesPath, []byte(envCookies), 0644)
-    }
-    
-    hasCookies := fileExists(cookiesPath)
+	// Check for cookies (Plan B for bot detection)
+	// 1. Check if cookies.txt exists
+	// 2. Or if YOUTUBE_COOKIES env var is set, verify/write it
+	cookiesPath := "cookies.txt"
+	if envCookies := os.Getenv("YOUTUBE_COOKIES"); envCookies != "" {
+		// Write env var to file if not exists or overwrite? Let's overwrite to ensure freshness
+		_ = os.WriteFile(cookiesPath, []byte(envCookies), 0644)
+	}
+
+	hasCookies := fileExists(cookiesPath)
 
 	// Common Args
-	// Added anti-bot flags: mimic Android client and real user agent
+	// Used standard User-Agent to match the Cookies (which are likely from Chrome/Desktop)
+	// Removed player_client=android because it might conflict with Web Cookies.
 	commonArgs := []string{
 		"--no-playlist",
 		"--no-warnings",
 		"--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-		"--extractor-args", "youtube:player_client=android",
 	}
-    
-    if hasCookies {
-        commonArgs = append(commonArgs, "--cookies", cookiesPath)
-    }
+
+	if hasCookies {
+		commonArgs = append(commonArgs, "--cookies", cookiesPath)
+	}
 
 	if format == "mp3" {
 		commonArgs = append(commonArgs, "-x", "--audio-format", "mp3")
