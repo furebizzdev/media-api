@@ -1,0 +1,16 @@
+# Binaries
+bin/
+downloads/
+media-api
+*.exe
+*.dll
+
+# OS
+.DS_Store
+
+# Go
+vendor/
+go.work
+
+# Web
+node_modules/

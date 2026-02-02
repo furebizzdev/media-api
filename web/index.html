@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Universal Media Downloader</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <header>
+                <h1>Media Downloader</h1>
+                <p class="subtitle">Download Video & Audio from YouTube, TikTok, Instagram & more</p>
+            </header>
+
+            <div class="form-content">
+                <div class="input-group">
+                    <input type="text" id="urlInput" placeholder="Paste link here..." autocomplete="off">
+                </div>
+
+                <div class="options">
+                    <div class="radio-group">
+                        <input type="radio" id="mp4" name="format" value="mp4" checked>
+                        <label for="mp4">MP4 Video</label>
+                    </div>
+                    <div class="radio-group">
+                        <input type="radio" id="mp3" name="format" value="mp3">
+                        <label for="mp3">MP3 Audio</label>
+                    </div>
+                </div>
+
+                <button id="downloadBtn" class="btn-download">
+                    <span>Download Now</span>
+                </button>
+
+                <div id="status" class="status-message"></div>
+                <div id="resultArea" style="display: none; margin-top: 1.5rem; text-align: center;">
+                    <p style="color: var(--text-secondary); margin-bottom: 0.5rem; font-size: 0.9rem;">File ready:</p>
+                    <div class="file-path"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html>
