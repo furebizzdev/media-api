@@ -55,11 +55,20 @@ func (s *Service) Download(url, format string) (string, error) {
 	// 2. Or if YOUTUBE_COOKIES env var is set, verify/write it
 	cookiesPath := "cookies.txt"
 	if envCookies := os.Getenv("YOUTUBE_COOKIES"); envCookies != "" {
-		// Write env var to file if not exists or overwrite? Let's overwrite to ensure freshness
-		_ = os.WriteFile(cookiesPath, []byte(envCookies), 0644)
+		fmt.Println("DEBUG: Found YOUTUBE_COOKIES env var. Writing to cookies.txt...")
+		if err := os.WriteFile(cookiesPath, []byte(envCookies), 0644); err != nil {
+			fmt.Printf("DEBUG: Error writing cookies.txt: %v\n", err)
+		}
+	} else {
+		fmt.Println("DEBUG: YOUTUBE_COOKIES env var is EMPTY.")
 	}
 
 	hasCookies := fileExists(cookiesPath)
+	if hasCookies {
+		fmt.Println("DEBUG: Using cookies.txt for auth.")
+	} else {
+		fmt.Println("DEBUG: No cookies.txt found. Proceeding without auth.")
+	}
 
 	// Common Args
 	// Used standard User-Agent to match the Cookies (which are likely from Chrome/Desktop)
