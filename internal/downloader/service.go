@@ -79,12 +79,11 @@ func (s *Service) Download(url, format string) (string, error) {
 	}
 
 	// Common Args
-	// Used standard User-Agent to match the Cookies (which are likely from Chrome/Desktop)
-	// Removed player_client=android because it might conflict with Web Cookies.
+	// Removed forced User-Agent because it conflicts with Cookies (which carry their own session signature).
+	// Let yt-dlp handle the UA or take it from the cookies implicitly.
 	commonArgs := []string{
 		"--no-playlist",
 		"--no-warnings",
-		"--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
 	}
 
 	if hasCookies {
