@@ -73,7 +73,13 @@ func (s *Service) Download(url, format string) (string, error) {
 	nameCmd := exec.Command(s.BinPath, getNameArgs...)
 	outBytes, err := nameCmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("failed to resolve filename: %w", err)
+		var errMsg string
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			errMsg = string(exitErr.Stderr)
+		} else {
+			errMsg = err.Error()
+		}
+		return "", fmt.Errorf("failed to resolve filename: %s", errMsg)
 	}
 	finalPath := strings.TrimSpace(string(outBytes))
 
