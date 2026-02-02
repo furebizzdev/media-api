@@ -58,6 +58,14 @@ func (s *Service) Download(url, format string) (string, error) {
 		fmt.Println("DEBUG: Found YOUTUBE_COOKIES env var. Writing to cookies.txt...")
 		if err := os.WriteFile(cookiesPath, []byte(envCookies), 0644); err != nil {
 			fmt.Printf("DEBUG: Error writing cookies.txt: %v\n", err)
+		} else {
+			// Deep Debug: Check if content is malformed (e.g. one single line)
+			content, _ := os.ReadFile(cookiesPath)
+			lines := strings.Split(string(content), "\n")
+			fmt.Printf("DEBUG: cookies.txt written. Size: %d bytes, Lines: %d\n", len(content), len(lines))
+			if len(content) > 20 {
+				fmt.Printf("DEBUG: Cookies Header: %s...\n", string(content)[:20])
+			}
 		}
 	} else {
 		fmt.Println("DEBUG: YOUTUBE_COOKIES env var is EMPTY.")
