@@ -75,7 +75,7 @@ func (s *Service) Download(url, format string) (string, error) {
 	}
 
 	if format == "mp3" {
-		commonArgs = append(commonArgs, "-x", "--audio-format", "mp3")
+		commonArgs = append(commonArgs, "-x", "--audio-format", "mp3", "-f", "bestaudio/best")
 	} else if format == "mp4" {
 		// Limit to 1080p, prefer H.264 (avc1) for compatibility and smaller size compared to VP9/AV1 at high bitrates?
 		// Actually VP9 is smaller but H.264 is standard.
