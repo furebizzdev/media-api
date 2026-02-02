@@ -1,19 +1,16 @@
 package downloader
 
 import (
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 type Service struct {
-	OutDir string
+	BinPath string
+	OutDir  string
 }
 
 func NewService() *Service {
@@ -22,68 +19,24 @@ func NewService() *Service {
 		fmt.Printf("Error creating download dir: %v\n", err)
 	}
 
+	// Check for yt-dlp in system path
+	binPath := "yt-dlp"
+
 	return &Service{
-		OutDir: outDir,
+		BinPath: binPath,
+		OutDir:  outDir,
 	}
-}
-
-// Public Invidious instances (will try in order if one fails)
-var invidiousInstances = []string{
-	"https://invidious.nerdvpn.de",
-	"https://inv.nadeko.net",
-	"https://invidious.privacyredirect.com",
-	"https://invidious.protokolla.fi",
-	"https://iv.odysfvr.com",
-}
-
-type InvidiousVideo struct {
-	Title           string            `json:"title"`
-	VideoID         string            `json:"videoId"`
-	AdaptiveFormats []InvidiousFormat `json:"adaptiveFormats"`
-	FormatStreams   []InvidiousFormat `json:"formatStreams"`
-}
-
-type InvidiousFormat struct {
-	URL          string `json:"url"`
-	Type         string `json:"type"`
-	Quality      string `json:"quality"`
-	Container    string `json:"container"`
-	Encoding     string `json:"encoding"`
-	AudioQuality string `json:"audioQuality,omitempty"`
-	Resolution   string `json:"resolution,omitempty"`
 }
 
 type SearchResult struct {
-	Type    string `json:"type"`
-	Title   string `json:"title"`
-	VideoID string `json:"videoId"`
-	Author  string `json:"author"`
-	Length  int    `json:"lengthSeconds"`
+	Title    string `json:"title"`
+	VideoID  string `json:"videoId"`
+	Author   string `json:"author"`
+	URL      string `json:"url"`
+	Duration int    `json:"duration"`
 }
 
-func extractVideoID(urlStr string) string {
-	// Handle youtu.be short links
-	if strings.Contains(urlStr, "youtu.be/") {
-		parts := strings.Split(urlStr, "youtu.be/")
-		if len(parts) > 1 {
-			id := strings.Split(parts[1], "?")[0]
-			return strings.TrimSpace(id)
-		}
-	}
-
-	// Handle youtube.com/watch?v= links
-	if strings.Contains(urlStr, "watch?v=") {
-		parts := strings.Split(urlStr, "watch?v=")
-		if len(parts) > 1 {
-			id := strings.Split(parts[1], "&")[0]
-			return strings.TrimSpace(id)
-		}
-	}
-
-	return ""
-}
-
-// Search YouTube using Invidious API
+// Search YouTube using yt-dlp's built-in search
 func (s *Service) Search(query string) (*SearchResult, error) {
 	if query == "" {
 		return nil, fmt.Errorf("search query is required")
@@ -91,52 +44,66 @@ func (s *Service) Search(query string) (*SearchResult, error) {
 
 	fmt.Printf("DEBUG: Searching for: %s\n", query)
 
-	// Try each Invidious instance until one works
-	var lastErr error
-	for i, instance := range invidiousInstances {
-		fmt.Printf("DEBUG: Trying Invidious instance %d/%d for search: %s\n", i+1, len(invidiousInstances), instance)
+	// Use yt-dlp's ytsearch to find first result
+	searchQuery := fmt.Sprintf("ytsearch1:%s", query)
 
-		result, err := s.searchFromInvidious(instance, query)
-		if err == nil && result != nil {
-			return result, nil
-		}
-
-		fmt.Printf("DEBUG: Search instance failed: %v\n", err)
-		lastErr = err
+	// Get video ID
+	cmd := exec.Command(s.BinPath, "--get-id", searchQuery)
+	idOutput, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("search failed: %w", err)
+	}
+	videoID := strings.TrimSpace(string(idOutput))
+	if videoID == "" {
+		return nil, fmt.Errorf("no results found for: %s", query)
 	}
 
-	return nil, fmt.Errorf("all Invidious instances failed for search, last error: %w", lastErr)
+	// Get video title
+	cmd = exec.Command(s.BinPath, "--get-title", searchQuery)
+	titleOutput, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get title: %w", err)
+	}
+	title := strings.TrimSpace(string(titleOutput))
+
+	// Get video duration
+	cmd = exec.Command(s.BinPath, "--get-duration", searchQuery)
+	durationOutput, _ := cmd.Output()
+	durationStr := strings.TrimSpace(string(durationOutput))
+
+	// Get uploader
+	cmd = exec.Command(s.BinPath, "--get-filename", "-o", "%(uploader)s", searchQuery)
+	uploaderOutput, _ := cmd.Output()
+	uploader := strings.TrimSpace(string(uploaderOutput))
+
+	result := &SearchResult{
+		Title:    title,
+		VideoID:  videoID,
+		Author:   uploader,
+		URL:      "https://youtube.com/watch?v=" + videoID,
+		Duration: parseDuration(durationStr),
+	}
+
+	fmt.Printf("DEBUG: Found video: %s (ID: %s)\n", result.Title, result.VideoID)
+	return result, nil
 }
 
-func (s *Service) searchFromInvidious(instance, query string) (*SearchResult, error) {
-	// Build search API URL
-	searchURL := fmt.Sprintf("%s/api/v1/search?q=%s&type=video", instance, url.QueryEscape(query))
-
-	client := &http.Client{Timeout: 20 * time.Second}
-	resp, err := client.Get(searchURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to search: %w", err)
+func parseDuration(dur string) int {
+	// Parse duration like "3:45" to seconds
+	parts := strings.Split(dur, ":")
+	if len(parts) == 2 {
+		var min, sec int
+		fmt.Sscanf(parts[0], "%d", &min)
+		fmt.Sscanf(parts[1], "%d", &sec)
+		return min*60 + sec
+	} else if len(parts) == 3 {
+		var hour, min, sec int
+		fmt.Sscanf(parts[0], "%d", &hour)
+		fmt.Sscanf(parts[1], "%d", &min)
+		fmt.Sscanf(parts[2], "%d", &sec)
+		return hour*3600 + min*60 + sec
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("invidious search API returned status %d", resp.StatusCode)
-	}
-
-	var results []SearchResult
-	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
-		return nil, fmt.Errorf("failed to parse search results: %w", err)
-	}
-
-	// Return first video result
-	for _, result := range results {
-		if result.Type == "video" && result.VideoID != "" {
-			fmt.Printf("DEBUG: Found video: %s (ID: %s)\n", result.Title, result.VideoID)
-			return &result, nil
-		}
-	}
-
-	return nil, fmt.Errorf("no video results found for query: %s", query)
+	return 0
 }
 
 func (s *Service) Download(urlStr, format string) (string, error) {
@@ -144,123 +111,67 @@ func (s *Service) Download(urlStr, format string) (string, error) {
 		return "", fmt.Errorf("url is required")
 	}
 
-	// Extract video ID from URL
-	videoID := extractVideoID(urlStr)
-	if videoID == "" {
-		return "", fmt.Errorf("could not extract video ID from URL")
+	fmt.Printf("DEBUG: Downloading %s (format: %s)\n", urlStr, format)
+
+	outputTemplate := filepath.Join(s.OutDir, "%(title)s.%(ext)s")
+
+	// Build yt-dlp arguments
+	args := []string{
+		"--no-playlist",
+		"--no-warnings",
+		"-o", outputTemplate,
 	}
 
-	fmt.Printf("DEBUG: Extracted video ID: %s, requesting format: %s\n", videoID, format)
-
-	// Try each Invidious instance until one works
-	var lastErr error
-	for i, instance := range invidiousInstances {
-		fmt.Printf("DEBUG: Trying Invidious instance %d/%d: %s\n", i+1, len(invidiousInstances), instance)
-
-		path, err := s.downloadFromInvidious(instance, videoID, format)
-		if err == nil {
-			return path, nil
-		}
-
-		fmt.Printf("DEBUG: Instance failed: %v\n", err)
-		lastErr = err
-	}
-
-	return "", fmt.Errorf("all Invidious instances failed, last error: %w", lastErr)
-}
-
-func (s *Service) downloadFromInvidious(instance, videoID, format string) (string, error) {
-	// Fetch video info from Invidious API
-	apiURL := fmt.Sprintf("%s/api/v1/videos/%s", instance, videoID)
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(apiURL)
-	if err != nil {
-		return "", fmt.Errorf("failed to fetch video info: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("invidious API returned status %d", resp.StatusCode)
-	}
-
-	var video InvidiousVideo
-	if err := json.NewDecoder(resp.Body).Decode(&video); err != nil {
-		return "", fmt.Errorf("failed to parse video info: %w", err)
-	}
-
-	// Select best format
-	var downloadURL string
 	if format == "mp3" {
-		// Find best audio-only format
-		for _, f := range video.AdaptiveFormats {
-			if strings.Contains(f.Type, "audio") {
-				downloadURL = f.URL
-				break
-			}
-		}
+		args = append(args, "-x", "--audio-format", "mp3", "-f", "bestaudio/best")
+	} else if format == "mp4" {
+		args = append(args, "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best", "--merge-output-format", "mp4")
 	} else {
-		// Find best video+audio format (prefer 1080p or lower)
-		for _, f := range video.FormatStreams {
-			if strings.Contains(f.Quality, "1080") || strings.Contains(f.Quality, "720") {
-				downloadURL = f.URL
-				break
-			}
-		}
-		// Fallback to any format stream
-		if downloadURL == "" && len(video.FormatStreams) > 0 {
-			downloadURL = video.FormatStreams[0].URL
-		}
+		args = append(args, "-f", "best[height<=1080]/best")
 	}
 
-	if downloadURL == "" {
-		return "", fmt.Errorf("no suitable format found")
-	}
+	// Get final filename first
+	getNameArgs := append([]string{"--get-filename"}, args...)
+	getNameArgs = append(getNameArgs, urlStr)
 
-	fmt.Printf("DEBUG: Found download URL, fetching file...\n")
-
-	// Download the file
-	fileResp, err := client.Get(downloadURL)
+	nameCmd := exec.Command(s.BinPath, getNameArgs...)
+	outBytes, err := nameCmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("failed to download file: %w", err)
-	}
-	defer fileResp.Body.Close()
-
-	if fileResp.StatusCode != 200 {
-		return "", fmt.Errorf("file download failed with status: %d", fileResp.StatusCode)
+		return "", fmt.Errorf("failed to resolve filename: %s", string(outBytes))
 	}
 
-	// Sanitize title for filename
-	cleanTitle := strings.Map(func(r rune) rune {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == ' ' || r == '-' || r == '_' {
-			return r
+	finalPath := strings.TrimSpace(string(outBytes))
+	lines := strings.Split(finalPath, "\n")
+	if len(lines) > 0 {
+		finalPath = strings.TrimSpace(lines[len(lines)-1])
+	}
+
+	// Fix extension for MP3
+	if format == "mp3" && !strings.HasSuffix(finalPath, ".mp3") {
+		ext := filepath.Ext(finalPath)
+		if ext != "" {
+			finalPath = strings.TrimSuffix(finalPath, ext) + ".mp3"
+		} else {
+			finalPath = finalPath + ".mp3"
 		}
-		return -1
-	}, video.Title)
-	cleanTitle = strings.TrimSpace(cleanTitle)
-	if cleanTitle == "" {
-		cleanTitle = video.VideoID
 	}
 
-	ext := ".mp4"
-	if format == "mp3" {
-		ext = ".mp3"
+	// Download
+	dlArgs := append(args, urlStr)
+	dlCmd := exec.Command(s.BinPath, dlArgs...)
+	dlCmd.Stdout = os.Stdout
+	dlCmd.Stderr = os.Stderr
+
+	fmt.Printf("DEBUG: Downloading to: %s\n", finalPath)
+	if err := dlCmd.Run(); err != nil {
+		return "", fmt.Errorf("download failed: %w", err)
 	}
 
-	finalPath := filepath.Join(s.OutDir, cleanTitle+ext)
-
-	// Save file
-	file, err := os.Create(finalPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to create file: %w", err)
-	}
-	defer file.Close()
-
-	written, err := io.Copy(file, fileResp.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed to save file: %w", err)
+	// Verify file exists
+	if _, err := os.Stat(finalPath); os.IsNotExist(err) {
+		return "", fmt.Errorf("download finished but file not found: %s", finalPath)
 	}
 
-	fmt.Printf("DEBUG: Successfully downloaded %d bytes to %s\n", written, finalPath)
+	fmt.Printf("DEBUG: Successfully downloaded to %s\n", finalPath)
 	return finalPath, nil
 }

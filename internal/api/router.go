@@ -46,7 +46,7 @@ func (h *Handler) HandleSearch(c *fiber.Ctx) error {
 		"author":   result.Author,
 		"url":      "https://youtube.com/watch?v=" + result.VideoID,
 		"videoId":  result.VideoID,
-		"duration": result.Length,
+		"duration": result.Duration,
 	})
 }
 
