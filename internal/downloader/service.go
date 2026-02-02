@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,6 +53,14 @@ type InvidiousFormat struct {
 	Resolution   string `json:"resolution,omitempty"`
 }
 
+type SearchResult struct {
+	Type    string `json:"type"`
+	Title   string `json:"title"`
+	VideoID string `json:"videoId"`
+	Author  string `json:"author"`
+	Length  int    `json:"lengthSeconds"`
+}
+
 func extractVideoID(urlStr string) string {
 	// Handle youtu.be short links
 	if strings.Contains(urlStr, "youtu.be/") {
@@ -72,6 +81,62 @@ func extractVideoID(urlStr string) string {
 	}
 
 	return ""
+}
+
+// Search YouTube using Invidious API
+func (s *Service) Search(query string) (*SearchResult, error) {
+	if query == "" {
+		return nil, fmt.Errorf("search query is required")
+	}
+
+	fmt.Printf("DEBUG: Searching for: %s\n", query)
+
+	// Try each Invidious instance until one works
+	var lastErr error
+	for i, instance := range invidiousInstances {
+		fmt.Printf("DEBUG: Trying Invidious instance %d/%d for search: %s\n", i+1, len(invidiousInstances), instance)
+
+		result, err := s.searchFromInvidious(instance, query)
+		if err == nil && result != nil {
+			return result, nil
+		}
+
+		fmt.Printf("DEBUG: Search instance failed: %v\n", err)
+		lastErr = err
+	}
+
+	return nil, fmt.Errorf("all Invidious instances failed for search, last error: %w", lastErr)
+}
+
+func (s *Service) searchFromInvidious(instance, query string) (*SearchResult, error) {
+	// Build search API URL
+	searchURL := fmt.Sprintf("%s/api/v1/search?q=%s&type=video", instance, url.QueryEscape(query))
+
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Get(searchURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to search: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("invidious search API returned status %d", resp.StatusCode)
+	}
+
+	var results []SearchResult
+	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
+		return nil, fmt.Errorf("failed to parse search results: %w", err)
+	}
+
+	// Return first video result
+	for _, result := range results {
+		if result.Type == "video" && result.VideoID != "" {
+			fmt.Printf("DEBUG: Found video: %s (ID: %s)\n", result.Title, result.VideoID)
+			return &result, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no video results found for query: %s", query)
 }
 
 func (s *Service) Download(urlStr, format string) (string, error) {

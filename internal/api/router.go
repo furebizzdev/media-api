@@ -2,6 +2,7 @@ package api
 
 import (
 	"media-downloader-api/internal/downloader"
+
 	"github.com/gofiber/fiber/v2"
 )
 
@@ -11,7 +12,7 @@ type Handler struct {
 
 func SetupRoutes(app *fiber.App, service *downloader.Service) {
 	h := &Handler{Service: service}
-	
+
 	api := app.Group("/api/v1")
 
 	api.Get("/health", func(c *fiber.Ctx) error {
@@ -21,6 +22,32 @@ func SetupRoutes(app *fiber.App, service *downloader.Service) {
 	})
 
 	api.Post("/download", h.HandleDownload)
+	api.Get("/search", h.HandleSearch)
+}
+
+func (h *Handler) HandleSearch(c *fiber.Ctx) error {
+	query := c.Query("q")
+	if query == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Query parameter 'q' is required",
+		})
+	}
+
+	result, err := h.Service.Search(query)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": err.Error(),
+		})
+	}
+
+	// Return search result with YouTube URL
+	return c.JSON(fiber.Map{
+		"title":    result.Title,
+		"author":   result.Author,
+		"url":      "https://youtube.com/watch?v=" + result.VideoID,
+		"videoId":  result.VideoID,
+		"duration": result.Length,
+	})
 }
 
 func (h *Handler) HandleDownload(c *fiber.Ctx) error {
@@ -49,7 +76,7 @@ func (h *Handler) HandleDownload(c *fiber.Ctx) error {
 		})
 	}
 
-	// For now, return the path. 
+	// For now, return the path.
 	// In a real app we might verify if we want to serve it directly.
 	// Let's add a download header so the user can download it?
 	// Or just return JSON info.
