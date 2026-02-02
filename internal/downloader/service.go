@@ -3,10 +3,15 @@ package downloader
 import (
 	"encoding/base64"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/kkdai/youtube/v2"
 )
 
 type Service struct {
@@ -41,65 +46,124 @@ func fileExists(filename string) bool {
 	return !info.IsDir()
 }
 
-func (s *Service) Download(url, format string) (string, error) {
-	if url == "" {
+func (s *Service) Download(urlStr, format string) (string, error) {
+	if urlStr == "" {
 		return "", fmt.Errorf("url is required")
 	}
 
+	// Try Native YouTube Downloader first for YouTube links
+	if strings.Contains(urlStr, "youtube.com") || strings.Contains(urlStr, "youtu.be") {
+		fmt.Println("DEBUG: Detected YouTube link. Trying native downloader...")
+		path, err := s.downloadYouTubeNative(urlStr, format)
+		if err == nil {
+			return path, nil
+		}
+		fmt.Printf("DEBUG: Native downloader failed: %v. Falling back to yt-dlp...\n", err)
+	}
+
+	return s.downloadWithYtDlp(urlStr, format)
+}
+
+func (s *Service) downloadYouTubeNative(urlStr, format string) (string, error) {
+	// Setup client with proxy if available
+	client := &http.Client{}
+	if proxyURL := os.Getenv("HTTP_PROXY"); proxyURL != "" {
+		if u, err := url.Parse(proxyURL); err == nil {
+			client.Transport = &http.Transport{
+				Proxy: http.ProxyURL(u),
+			}
+			fmt.Println("DEBUG: Native downloader using proxy:", proxyURL)
+		}
+	}
+
+	yclient := youtube.Client{HTTPClient: client}
+	video, err := yclient.GetVideo(urlStr)
+	if err != nil {
+		return "", err
+	}
+
+	// Select best format
+	formats := video.Formats
+	if format == "mp3" {
+		formats = formats.Type("audio")
+	} else if format == "mp4" {
+		formats = formats.Type("video").WithAudioChannels()
+	}
+	formats.Sort()
+
+	if len(formats) == 0 {
+		return "", fmt.Errorf("no suitable formats found")
+	}
+
+	targetFormat := &formats[0] // Best quality after sort
+
+	// Sanitize filename
+	cleanTitle := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == ' ' || r == '-' || r == '_' {
+			return r
+		}
+		return -1
+	}, video.Title)
+	cleanTitle = strings.TrimSpace(cleanTitle)
+
+	ext := "mp4"
+	if format == "mp3" {
+		ext = "mp3"
+	}
+	finalPath := filepath.Join(s.OutDir, fmt.Sprintf("%s.%s", cleanTitle, ext))
+
+	fmt.Printf("DEBUG: Downloading native to: %s\n", finalPath)
+	stream, size, err := yclient.GetStream(video, targetFormat)
+	if err != nil {
+		return "", err
+	}
+	defer stream.Close()
+
+	file, err := os.Create(finalPath)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	_, err = io.Copy(file, stream)
+	if err != nil {
+		return "", err
+	}
+
+	fmt.Printf("DEBUG: Downloaded %d bytes natively\n", size)
+	return finalPath, nil
+}
+
+func (s *Service) downloadWithYtDlp(urlStr, format string) (string, error) {
 	// Output template
-	// Use %(title)s for readability, but sanitize it? yt-dlp sanitizes by default.
-	// %(id)s is safest for uniqueness if we don't want collisions easily, but title is friendlier.
 	outputTemplate := filepath.Join(s.OutDir, "%(title)s.%(ext)s")
 
-	// Check for cookies (Plan B for bot detection)
-	// 1. Check if cookies.txt exists
-	// 2. Or if YOUTUBE_COOKIES env var is set, verify/write it
+	// Check for cookies
 	cookiesPath := "cookies.txt"
 	if envCookies := os.Getenv("YOUTUBE_COOKIES"); envCookies != "" {
 		fmt.Println("DEBUG: Found YOUTUBE_COOKIES env var. Writing to cookies.txt...")
-
 		var cookieData []byte
-		var err error
-
-		// Attempt to decode as Base64 first to avoid formatting issues
 		decoded, decodeErr := base64.StdEncoding.DecodeString(envCookies)
 		if decodeErr == nil {
-			fmt.Println("DEBUG: Successfully decoded YOUTUBE_COOKIES as Base64.")
 			cookieData = decoded
 		} else {
-			fmt.Println("DEBUG: YOUTUBE_COOKIES is not Base64 (or malformed). Using raw value.")
 			cookieData = []byte(envCookies)
 		}
-
-		if err = os.WriteFile(cookiesPath, cookieData, 0644); err != nil {
-			fmt.Printf("DEBUG: Error writing cookies.txt: %v\n", err)
-		} else {
-			// Deep Debug: Check if content is malformed (e.g. one single line)
-			lines := strings.Split(string(cookieData), "\n")
-			fmt.Printf("DEBUG: cookies.txt written. Size: %d bytes, Lines: %d\n", len(cookieData), len(lines))
-			if len(cookieData) > 20 {
-				fmt.Printf("DEBUG: Cookies Header: %s...\n", string(cookieData)[:20])
-			}
-		}
-	} else {
-		fmt.Println("DEBUG: YOUTUBE_COOKIES env var is EMPTY.")
+		_ = os.WriteFile(cookiesPath, cookieData, 0644)
 	}
 
 	hasCookies := fileExists(cookiesPath)
-	if hasCookies {
-		fmt.Println("DEBUG: Using cookies.txt for auth.")
-	} else {
-		fmt.Println("DEBUG: No cookies.txt found. Proceeding without auth.")
-	}
 
 	// Common Args
-	// - Force IPv4: Datacenter IPv6 ranges are often blocked.
-	// - No Playlist/Warnings: Cleaner output.
-	// - Removed forced User-Agent/iOS client: These often conflict with Desktop cookies and trigger bot detection.
 	commonArgs := []string{
 		"--force-ipv4",
 		"--no-playlist",
 		"--no-warnings",
+	}
+
+	if proxyURL := os.Getenv("HTTP_PROXY"); proxyURL != "" {
+		commonArgs = append(commonArgs, "--proxy", proxyURL)
+		fmt.Println("DEBUG: yt-dlp using proxy:", proxyURL)
 	}
 
 	if hasCookies {
@@ -109,37 +173,27 @@ func (s *Service) Download(url, format string) (string, error) {
 	if format == "mp3" {
 		commonArgs = append(commonArgs, "-x", "--audio-format", "mp3", "-f", "bestaudio/best")
 	} else if format == "mp4" {
-		// Limit to 1080p, prefer H.264 (avc1) for compatibility and smaller size compared to VP9/AV1 at high bitrates?
-		// Actually VP9 is smaller but H.264 is standard.
-		// User said "too heavy", so maybe just capping resolution is enough.
-		// We use -S "res:1080" to prioritize 1080p, and "codec:h264" if available.
 		commonArgs = append(commonArgs, "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best", "-S", "res:1080,ext:mp4:m4a", "--merge-output-format", "mp4")
 	} else {
-		// Default
 		commonArgs = append(commonArgs, "-f", "best[height<=1080]/best")
 	}
 
 	// 1. Get Filename
-	// We add -o outputTemplate and --get-filename
 	getNameArgs := append([]string{"--get-filename", "-o", outputTemplate}, commonArgs...)
-	getNameArgs = append(getNameArgs, url)
+	getNameArgs = append(getNameArgs, urlStr)
 
 	nameCmd := exec.Command(s.BinPath, getNameArgs...)
-	outBytes, err := nameCmd.CombinedOutput() // Capture Both Stdout and Stderr for better debugging
+	outBytes, err := nameCmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve filename: %s", string(outBytes))
 	}
 	finalPath := strings.TrimSpace(string(outBytes))
-	// In case both filename and error logs were returned, we only want the last line if it exists
 	lines := strings.Split(finalPath, "\n")
 	if len(lines) > 0 {
 		finalPath = strings.TrimSpace(lines[len(lines)-1])
 	}
 
-	// Fix extension mismatch for MP3
-	// yt-dlp --get-filename often returns the video extension even with -x
 	if format == "mp3" && !strings.HasSuffix(finalPath, ".mp3") {
-		// Replace extension with .mp3
 		ext := filepath.Ext(finalPath)
 		if ext != "" {
 			finalPath = strings.TrimSuffix(finalPath, ext) + ".mp3"
@@ -150,20 +204,18 @@ func (s *Service) Download(url, format string) (string, error) {
 
 	// 2. Download
 	dlArgs := append([]string{"-o", outputTemplate}, commonArgs...)
-	dlArgs = append(dlArgs, url)
+	dlArgs = append(dlArgs, urlStr)
 
 	dlCmd := exec.Command(s.BinPath, dlArgs...)
-	dlCmd.Stdout = os.Stdout // Stream to server log for debug
+	dlCmd.Stdout = os.Stdout
 	dlCmd.Stderr = os.Stderr
 
-	fmt.Printf("Downloading to: %s\n", finalPath)
+	fmt.Printf("Downloading with yt-dlp to: %s\n", finalPath)
 	if err := dlCmd.Run(); err != nil {
 		return "", fmt.Errorf("download failed: %w", err)
 	}
 
-	// Verify file exists
 	if !fileExists(finalPath) {
-		// Fallback check: sometimes extension differs slightly or path issues.
 		return "", fmt.Errorf("download finished but file not found at expected path: %s", finalPath)
 	}
 
