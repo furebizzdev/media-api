@@ -1,10 +1,12 @@
 package downloader
 
 import (
+	"bufio"
 	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"os/exec"
@@ -64,9 +66,60 @@ func (s *Service) Download(urlStr, format string) (string, error) {
 	return s.downloadWithYtDlp(urlStr, format)
 }
 
+func (s *Service) parseCookiesFile(path string) []*http.Cookie {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+
+	var cookies []*http.Cookie
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "#") || strings.TrimSpace(line) == "" {
+			continue
+		}
+		fields := strings.Split(line, "\t")
+		if len(fields) < 7 {
+			continue
+		}
+		// Fields: domain, flag, path, secure, expiration, name, value
+		cookies = append(cookies, &http.Cookie{
+			Name:   fields[5],
+			Value:  fields[6],
+			Domain: fields[0],
+			Path:   fields[2],
+		})
+	}
+	return cookies
+}
+
 func (s *Service) downloadYouTubeNative(urlStr, format string) (string, error) {
+	jar, _ := cookiejar.New(nil)
+	cookiesPath := "cookies.txt"
+
+	// Ensure cookies are fresh if env var exists
+	if envCookies := os.Getenv("YOUTUBE_COOKIES"); envCookies != "" {
+		var cookieData []byte
+		decoded, decodeErr := base64.StdEncoding.DecodeString(envCookies)
+		if decodeErr == nil {
+			cookieData = decoded
+		} else {
+			cookieData = []byte(envCookies)
+		}
+		_ = os.WriteFile(cookiesPath, cookieData, 0644)
+	}
+
+	if fileExists(cookiesPath) {
+		cookies := s.parseCookiesFile(cookiesPath)
+		u, _ := url.Parse("https://youtube.com")
+		jar.SetCookies(u, cookies)
+		fmt.Printf("DEBUG: Native downloader loaded %d cookies.\n", len(cookies))
+	}
+
 	// Setup client with proxy if available
-	client := &http.Client{}
+	client := &http.Client{Jar: jar}
 	if proxyURL := os.Getenv("HTTP_PROXY"); proxyURL != "" {
 		if u, err := url.Parse(proxyURL); err == nil {
 			client.Transport = &http.Transport{
@@ -141,7 +194,6 @@ func (s *Service) downloadWithYtDlp(urlStr, format string) (string, error) {
 	// Check for cookies
 	cookiesPath := "cookies.txt"
 	if envCookies := os.Getenv("YOUTUBE_COOKIES"); envCookies != "" {
-		fmt.Println("DEBUG: Found YOUTUBE_COOKIES env var. Writing to cookies.txt...")
 		var cookieData []byte
 		decoded, decodeErr := base64.StdEncoding.DecodeString(envCookies)
 		if decodeErr == nil {
@@ -155,10 +207,12 @@ func (s *Service) downloadWithYtDlp(urlStr, format string) (string, error) {
 	hasCookies := fileExists(cookiesPath)
 
 	// Common Args
+	// Re-added common User-Agent as most cookies are exported from Desktop Chrome
 	commonArgs := []string{
 		"--force-ipv4",
 		"--no-playlist",
 		"--no-warnings",
+		"--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 	}
 
 	if proxyURL := os.Getenv("HTTP_PROXY"); proxyURL != "" {
@@ -185,6 +239,7 @@ func (s *Service) downloadWithYtDlp(urlStr, format string) (string, error) {
 	nameCmd := exec.Command(s.BinPath, getNameArgs...)
 	outBytes, err := nameCmd.CombinedOutput()
 	if err != nil {
+		fmt.Printf("DEBUG: yt-dlp filename error: %v, Output: %s\n", err, string(outBytes))
 		return "", fmt.Errorf("failed to resolve filename: %s", string(outBytes))
 	}
 	finalPath := strings.TrimSpace(string(outBytes))
@@ -212,6 +267,7 @@ func (s *Service) downloadWithYtDlp(urlStr, format string) (string, error) {
 
 	fmt.Printf("Downloading with yt-dlp to: %s\n", finalPath)
 	if err := dlCmd.Run(); err != nil {
+		fmt.Printf("DEBUG: yt-dlp download error: %v\n", err)
 		return "", fmt.Errorf("download failed: %w", err)
 	}
 
