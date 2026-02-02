@@ -81,7 +81,11 @@ func (s *Service) Download(url, format string) (string, error) {
 	// Common Args
 	// Removed forced User-Agent because it conflicts with Cookies (which carry their own session signature).
 	// Let yt-dlp handle the UA or take it from the cookies implicitly.
+	// Common Args
+	// - Force IPv4: Datacenter IPv6 ranges are often blocked.
+	// - No Playlist/Warnings: Cleaner output.
 	commonArgs := []string{
+		"--force-ipv4",
 		"--no-playlist",
 		"--no-warnings",
 	}
