@@ -26,17 +26,52 @@ func NewService() *Service {
 	}
 }
 
-type CobaltRequest struct {
-	URL          string `json:"url"`
-	VideoQuality string `json:"vQuality,omitempty"`
-	AudioFormat  string `json:"aFormat,omitempty"`
-	IsAudioOnly  bool   `json:"isAudioOnly"`
+// Public Invidious instances (will try in order if one fails)
+var invidiousInstances = []string{
+	"https://invidious.nerdvpn.de",
+	"https://inv.nadeko.net",
+	"https://invidious.privacyredirect.com",
+	"https://invidious.protokolla.fi",
+	"https://iv.odysfvr.com",
 }
 
-type CobaltResponse struct {
-	Status string `json:"status"`
-	URL    string `json:"url"`
-	Text   string `json:"text,omitempty"`
+type InvidiousVideo struct {
+	Title           string            `json:"title"`
+	VideoID         string            `json:"videoId"`
+	AdaptiveFormats []InvidiousFormat `json:"adaptiveFormats"`
+	FormatStreams   []InvidiousFormat `json:"formatStreams"`
+}
+
+type InvidiousFormat struct {
+	URL          string `json:"url"`
+	Type         string `json:"type"`
+	Quality      string `json:"quality"`
+	Container    string `json:"container"`
+	Encoding     string `json:"encoding"`
+	AudioQuality string `json:"audioQuality,omitempty"`
+	Resolution   string `json:"resolution,omitempty"`
+}
+
+func extractVideoID(urlStr string) string {
+	// Handle youtu.be short links
+	if strings.Contains(urlStr, "youtu.be/") {
+		parts := strings.Split(urlStr, "youtu.be/")
+		if len(parts) > 1 {
+			id := strings.Split(parts[1], "?")[0]
+			return strings.TrimSpace(id)
+		}
+	}
+
+	// Handle youtube.com/watch?v= links
+	if strings.Contains(urlStr, "watch?v=") {
+		parts := strings.Split(urlStr, "watch?v=")
+		if len(parts) > 1 {
+			id := strings.Split(parts[1], "&")[0]
+			return strings.TrimSpace(id)
+		}
+	}
+
+	return ""
 }
 
 func (s *Service) Download(urlStr, format string) (string, error) {
@@ -44,63 +79,85 @@ func (s *Service) Download(urlStr, format string) (string, error) {
 		return "", fmt.Errorf("url is required")
 	}
 
-	fmt.Printf("DEBUG: Using Cobalt API for: %s (format: %s)\n", urlStr, format)
-
-	// Prepare Cobalt request
-	isAudio := format == "mp3"
-	cobaltReq := CobaltRequest{
-		URL:         urlStr,
-		IsAudioOnly: isAudio,
+	// Extract video ID from URL
+	videoID := extractVideoID(urlStr)
+	if videoID == "" {
+		return "", fmt.Errorf("could not extract video ID from URL")
 	}
 
-	if isAudio {
-		cobaltReq.AudioFormat = "mp3"
-	} else {
-		cobaltReq.VideoQuality = "1080"
+	fmt.Printf("DEBUG: Extracted video ID: %s, requesting format: %s\n", videoID, format)
+
+	// Try each Invidious instance until one works
+	var lastErr error
+	for i, instance := range invidiousInstances {
+		fmt.Printf("DEBUG: Trying Invidious instance %d/%d: %s\n", i+1, len(invidiousInstances), instance)
+
+		path, err := s.downloadFromInvidious(instance, videoID, format)
+		if err == nil {
+			return path, nil
+		}
+
+		fmt.Printf("DEBUG: Instance failed: %v\n", err)
+		lastErr = err
 	}
 
-	reqBody, _ := json.Marshal(cobaltReq)
+	return "", fmt.Errorf("all Invidious instances failed, last error: %w", lastErr)
+}
 
-	// Call Cobalt API
-	req, err := http.NewRequest("POST", "https://co.wuk.sh/api/json", strings.NewReader(string(reqBody)))
+func (s *Service) downloadFromInvidious(instance, videoID, format string) (string, error) {
+	// Fetch video info from Invidious API
+	apiURL := fmt.Sprintf("%s/api/v1/videos/%s", instance, videoID)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(apiURL)
 	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-
-	client := &http.Client{Timeout: 60 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("cobalt api request failed: %w", err)
+		return "", fmt.Errorf("failed to fetch video info: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("cobalt api error (status %d): %s", resp.StatusCode, string(body))
+		return "", fmt.Errorf("invidious API returned status %d", resp.StatusCode)
 	}
 
-	var cobaltResp CobaltResponse
-	if err := json.NewDecoder(resp.Body).Decode(&cobaltResp); err != nil {
-		return "", fmt.Errorf("failed to parse cobalt response: %w", err)
+	var video InvidiousVideo
+	if err := json.NewDecoder(resp.Body).Decode(&video); err != nil {
+		return "", fmt.Errorf("failed to parse video info: %w", err)
 	}
 
-	if cobaltResp.Status != "stream" && cobaltResp.Status != "redirect" {
-		return "", fmt.Errorf("cobalt returned status: %s, text: %s", cobaltResp.Status, cobaltResp.Text)
+	// Select best format
+	var downloadURL string
+	if format == "mp3" {
+		// Find best audio-only format
+		for _, f := range video.AdaptiveFormats {
+			if strings.Contains(f.Type, "audio") {
+				downloadURL = f.URL
+				break
+			}
+		}
+	} else {
+		// Find best video+audio format (prefer 1080p or lower)
+		for _, f := range video.FormatStreams {
+			if strings.Contains(f.Quality, "1080") || strings.Contains(f.Quality, "720") {
+				downloadURL = f.URL
+				break
+			}
+		}
+		// Fallback to any format stream
+		if downloadURL == "" && len(video.FormatStreams) > 0 {
+			downloadURL = video.FormatStreams[0].URL
+		}
 	}
 
-	if cobaltResp.URL == "" {
-		return "", fmt.Errorf("cobalt did not return a download URL")
+	if downloadURL == "" {
+		return "", fmt.Errorf("no suitable format found")
 	}
 
-	fmt.Printf("DEBUG: Cobalt returned download URL, fetching file...\n")
+	fmt.Printf("DEBUG: Found download URL, fetching file...\n")
 
-	// Download the file from Cobalt's URL
-	fileResp, err := http.Get(cobaltResp.URL)
+	// Download the file
+	fileResp, err := client.Get(downloadURL)
 	if err != nil {
-		return "", fmt.Errorf("failed to download from cobalt url: %w", err)
+		return "", fmt.Errorf("failed to download file: %w", err)
 	}
 	defer fileResp.Body.Close()
 
@@ -108,26 +165,24 @@ func (s *Service) Download(urlStr, format string) (string, error) {
 		return "", fmt.Errorf("file download failed with status: %d", fileResp.StatusCode)
 	}
 
-	// Generate filename from Content-Disposition or use generic name
-	filename := "download"
-	if cd := fileResp.Header.Get("Content-Disposition"); cd != "" {
-		if idx := strings.Index(cd, "filename="); idx != -1 {
-			filename = strings.Trim(cd[idx+9:], "\"")
+	// Sanitize title for filename
+	cleanTitle := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == ' ' || r == '-' || r == '_' {
+			return r
 		}
+		return -1
+	}, video.Title)
+	cleanTitle = strings.TrimSpace(cleanTitle)
+	if cleanTitle == "" {
+		cleanTitle = video.VideoID
 	}
 
-	// Ensure correct extension
-	ext := filepath.Ext(filename)
-	if ext == "" {
-		if format == "mp3" {
-			ext = ".mp3"
-		} else {
-			ext = ".mp4"
-		}
-		filename = filename + ext
+	ext := ".mp4"
+	if format == "mp3" {
+		ext = ".mp3"
 	}
 
-	finalPath := filepath.Join(s.OutDir, filename)
+	finalPath := filepath.Join(s.OutDir, cleanTitle+ext)
 
 	// Save file
 	file, err := os.Create(finalPath)
