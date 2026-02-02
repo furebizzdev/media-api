@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
@@ -56,15 +57,28 @@ func (s *Service) Download(url, format string) (string, error) {
 	cookiesPath := "cookies.txt"
 	if envCookies := os.Getenv("YOUTUBE_COOKIES"); envCookies != "" {
 		fmt.Println("DEBUG: Found YOUTUBE_COOKIES env var. Writing to cookies.txt...")
-		if err := os.WriteFile(cookiesPath, []byte(envCookies), 0644); err != nil {
+
+		var cookieData []byte
+		var err error
+
+		// Attempt to decode as Base64 first to avoid formatting issues
+		decoded, decodeErr := base64.StdEncoding.DecodeString(envCookies)
+		if decodeErr == nil {
+			fmt.Println("DEBUG: Successfully decoded YOUTUBE_COOKIES as Base64.")
+			cookieData = decoded
+		} else {
+			fmt.Println("DEBUG: YOUTUBE_COOKIES is not Base64 (or malformed). Using raw value.")
+			cookieData = []byte(envCookies)
+		}
+
+		if err = os.WriteFile(cookiesPath, cookieData, 0644); err != nil {
 			fmt.Printf("DEBUG: Error writing cookies.txt: %v\n", err)
 		} else {
 			// Deep Debug: Check if content is malformed (e.g. one single line)
-			content, _ := os.ReadFile(cookiesPath)
-			lines := strings.Split(string(content), "\n")
-			fmt.Printf("DEBUG: cookies.txt written. Size: %d bytes, Lines: %d\n", len(content), len(lines))
-			if len(content) > 20 {
-				fmt.Printf("DEBUG: Cookies Header: %s...\n", string(content)[:20])
+			lines := strings.Split(string(cookieData), "\n")
+			fmt.Printf("DEBUG: cookies.txt written. Size: %d bytes, Lines: %d\n", len(cookieData), len(lines))
+			if len(cookieData) > 20 {
+				fmt.Printf("DEBUG: Cookies Header: %s...\n", string(cookieData)[:20])
 			}
 		}
 	} else {
@@ -83,11 +97,14 @@ func (s *Service) Download(url, format string) (string, error) {
 	// Let yt-dlp handle the UA or take it from the cookies implicitly.
 	// Common Args
 	// - Force IPv4: Datacenter IPv6 ranges are often blocked.
-	// - No Playlist/Warnings: Cleaner output.
+	// - User Agent: Safari/iPhone is often less restricted.
+	// - Extractor Args: Specifying 'ios' client is the current best way to bypass 'Sign in' on cloud IPs.
 	commonArgs := []string{
 		"--force-ipv4",
 		"--no-playlist",
 		"--no-warnings",
+		"--user-agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+		"--extractor-args", "youtube:player_client=ios",
 	}
 
 	if hasCookies {
@@ -113,17 +130,16 @@ func (s *Service) Download(url, format string) (string, error) {
 	getNameArgs = append(getNameArgs, url)
 
 	nameCmd := exec.Command(s.BinPath, getNameArgs...)
-	outBytes, err := nameCmd.Output()
+	outBytes, err := nameCmd.CombinedOutput() // Capture Both Stdout and Stderr for better debugging
 	if err != nil {
-		var errMsg string
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			errMsg = string(exitErr.Stderr)
-		} else {
-			errMsg = err.Error()
-		}
-		return "", fmt.Errorf("failed to resolve filename: %s", errMsg)
+		return "", fmt.Errorf("failed to resolve filename: %s", string(outBytes))
 	}
 	finalPath := strings.TrimSpace(string(outBytes))
+	// In case both filename and error logs were returned, we only want the last line if it exists
+	lines := strings.Split(finalPath, "\n")
+	if len(lines) > 0 {
+		finalPath = strings.TrimSpace(lines[len(lines)-1])
+	}
 
 	// Fix extension mismatch for MP3
 	// yt-dlp --get-filename often returns the video extension even with -x
